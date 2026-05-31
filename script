@@ -1,0 +1,603 @@
+-- Inertia-Isolated Balanced Drone Controller Script with Live Paper Doll HUD & FPV Acro Mode
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local rootPart = character:WaitForChild("HumanoidRootPart")
+local head = character:WaitForChild("Head")
+local humanoid = character:WaitForChild("Humanoid")
+local camera = Workspace.CurrentCamera
+
+-- --- LOCAL REBINDABLE KEY CONFIGURATION ---
+local KEYBIND_NOCLIP_KEYBOARD = Enum.KeyCode.N
+local KEYBIND_NOCLIP_GAMEPAD  = Enum.KeyCode.ButtonA 
+local KEYBIND_ACRO_KEYBOARD   = Enum.KeyCode.M
+local KEYBIND_ACRO_GAMEPAD    = Enum.KeyCode.ButtonL3 
+
+-- --- DRONE TUNING CONFIGURATIONS ---
+local IS_DRONE_MODE = false
+local IS_NOCLIP_MODE = false       
+local IS_ACRO_MODE = false 
+
+local TURN_SPEED = 4.5         
+local ACCEL_TRANSITION_SPEED = 3.5 
+
+-- Dynamic Speed Multipliers (Stable Mode)
+local ACCEL_MULTIPLIER = 2.3       
+local DECEL_MULTIPLIER = 0.3 
+
+-- Base Mode Configuration Constants (Stable)
+local BASE_ACCEL = 400             
+local BOOST_ACCEL = 950           
+local BASE_MAX_HORIZ = 140
+local BOOST_MAX_HORIZ = 450
+local MAX_VERTICAL_SPEED = 90
+
+-- FPV Racing Configuration Constants (Realistic Aerodynamics)
+local ACRO_ACCEL = 1600            
+local ACRO_MAX_SPEED = 450         
+local ACRO_AERO_DRAG = 0.985       
+local ACRO_STALL_DRAG = 0.965      
+local ACRO_TURN_BLEED = 0.85       
+local THROTTLE_SPEED = 1.8         
+
+-- Runtime Dynamic Tracks
+local currentEngineAccel = BASE_ACCEL
+local currentEngineMaxSpeed = BASE_MAX_HORIZ
+local fpvThrottle = 0 
+
+local HORIZONTAL_DRAG = 0.962      
+local VERTICAL_DRAG = 0.94         
+
+local MAX_FLIGHT_PITCH = math.rad(35)   
+local MAX_FLIGHT_ROLL = math.rad(28)    
+
+local CAMERA_STICK_SENSITIVITY = 2.5 
+local KEYBOARD_PITCH_SPEED = 2.2  
+local TILT_LERP_SPEED = 6.0       
+local CAM_POS_LERP_SPEED = 14   
+local CAM_ROT_LERP_SPEED = 6.0    
+
+local currentVelocity = Vector3.new()
+local droneHeadingCFrame = CFrame.new() 
+
+local cameraPitch = 0
+local cameraYaw = 0 
+local previousCameraYaw = 0 
+local currentTiltX = 0
+local currentTiltZ = 0
+local cameraTrackingCFrame = CFrame.new() 
+
+local standbyAltitude = 0
+local isLockingStandby = false
+
+local humanoidDiedConnection = nil
+local lastGamepadNoclipPress = 0 
+local lastGamepadAcroPress = 0
+
+-- --- CREATE GUI MASTER ---
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "DroneGui"
+screenGui.ResetOnSpawn = true
+screenGui.Parent = player:WaitForChild("PlayerGui")
+
+local mainButton = Instance.new("TextButton")
+mainButton.Size = UDim2.new(0, 150, 0, 45)
+mainButton.Position = UDim2.new(0.5, -75, 0.85, 0)
+mainButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+mainButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+mainButton.Font = Enum.Font.GothamBold
+mainButton.TextSize = 14
+mainButton.Text = "ENABLE DRONE"
+mainButton.BorderSizePixel = 0
+mainButton.Modal = true 
+
+local uiCornerMain = Instance.new("UICorner")
+uiCornerMain.CornerRadius = UDim.new(0, 8)
+uiCornerMain.Parent = mainButton
+mainButton.Parent = screenGui
+
+-- HUD Toggle Button
+local hudToggleButton = Instance.new("TextButton")
+hudToggleButton.Size = UDim2.new(0, 50, 0, 45)
+hudToggleButton.Position = UDim2.new(0.5, 85, 0.85, 0)
+hudToggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+hudToggleButton.TextColor3 = Color3.fromRGB(200, 200, 200)
+hudToggleButton.Font = Enum.Font.GothamBold
+hudToggleButton.TextSize = 12
+hudToggleButton.Text = "HUD"
+hudToggleButton.BorderSizePixel = 0
+hudToggleButton.Visible = false
+hudToggleButton.Parent = screenGui
+
+local uiCornerHudBtn = Instance.new("UICorner")
+uiCornerHudBtn.CornerRadius = UDim.new(0, 8)
+uiCornerHudBtn.Parent = hudToggleButton
+
+-- Mode Indicator UI
+local modeLabel = Instance.new("TextLabel")
+modeLabel.Size = UDim2.new(0, 200, 0, 30)
+modeLabel.Position = UDim2.new(0.5, -100, 0.80, -5)
+modeLabel.BackgroundTransparency = 1
+modeLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+modeLabel.Font = Enum.Font.GothamBold
+modeLabel.TextSize = 14
+modeLabel.Text = "MODE: STABLE"
+modeLabel.Visible = false
+modeLabel.Parent = screenGui
+
+-- --- MINECRAFT PAPER DOLL ---
+local dollContainer = Instance.new("Frame")
+dollContainer.Name = "PaperDollHUD"
+dollContainer.Size = UDim2.new(0, 200, 0, 260)
+dollContainer.Position = UDim2.new(0, 20, 0, 20)
+dollContainer.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+dollContainer.BackgroundTransparency = 0.4
+dollContainer.BorderSizePixel = 0
+dollContainer.Active = true
+dollContainer.Draggable = true 
+dollContainer.Visible = false  
+dollContainer.Parent = screenGui
+
+local uiCornerDoll = Instance.new("UICorner")
+uiCornerDoll.CornerRadius = UDim.new(0, 12)
+uiCornerDoll.Parent = dollContainer
+
+local viewportFrame = Instance.new("ViewportFrame")
+viewportFrame.Size = UDim2.new(1, 0, 1, -10)
+viewportFrame.Position = UDim2.new(0, 0, 0, 5)
+viewportFrame.BackgroundTransparency = 1
+viewportFrame.BorderSizePixel = 0
+viewportFrame.Parent = dollContainer
+
+local viewportCamera = Instance.new("Camera")
+viewportCamera.FieldOfView = 25 
+viewportFrame.CurrentCamera = viewportCamera
+viewportCamera.Parent = viewportFrame
+
+local clonedModel = nil
+
+-- --- TELEMETRY DASHBOARD ---
+local telemetryPanel = Instance.new("Frame")
+telemetryPanel.Name = "TelemetryHUD"
+telemetryPanel.Size = UDim2.new(0, 220, 0, 100)
+telemetryPanel.Position = UDim2.new(1, -240, 1, -160)
+telemetryPanel.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
+telemetryPanel.BackgroundTransparency = 0.5
+telemetryPanel.BorderSizePixel = 0
+telemetryPanel.Active = true
+telemetryPanel.Draggable = true
+telemetryPanel.Visible = false
+telemetryPanel.Parent = screenGui
+
+local uiCornerTelemetry = Instance.new("UICorner")
+uiCornerTelemetry.CornerRadius = UDim.new(0, 8)
+uiCornerTelemetry.Parent = telemetryPanel
+
+local closeTelemetryBtn = Instance.new("TextButton")
+closeTelemetryBtn.Size = UDim2.new(0, 24, 0, 24)
+closeTelemetryBtn.Position = UDim2.new(1, -28, 0, 4)
+closeTelemetryBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
+closeTelemetryBtn.BackgroundTransparency = 0.2
+closeTelemetryBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+closeTelemetryBtn.Font = Enum.Font.GothamBold
+closeTelemetryBtn.Text = "✕"
+closeTelemetryBtn.Parent = telemetryPanel
+
+local uiCornerCloseT = Instance.new("UICorner")
+uiCornerCloseT.CornerRadius = UDim.new(1, 0)
+uiCornerCloseT.Parent = closeTelemetryBtn
+
+local speedLabel = Instance.new("TextLabel")
+speedLabel.Size = UDim2.new(1, -20, 0, 25)
+speedLabel.Position = UDim2.new(0, 10, 0, 15)
+speedLabel.BackgroundTransparency = 1
+speedLabel.TextColor3 = Color3.fromRGB(100, 255, 150)
+speedLabel.Font = Enum.Font.GothamMedium
+speedLabel.TextXAlignment = Enum.TextXAlignment.Left
+speedLabel.Text = "SPEED: 0 SPS"
+speedLabel.Parent = telemetryPanel
+
+local throttleLabel = Instance.new("TextLabel")
+throttleLabel.Size = UDim2.new(1, -20, 0, 25)
+throttleLabel.Position = UDim2.new(0, 10, 0, 40)
+throttleLabel.BackgroundTransparency = 1
+throttleLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
+throttleLabel.Font = Enum.Font.GothamMedium
+throttleLabel.TextXAlignment = Enum.TextXAlignment.Left
+throttleLabel.Text = "THROTTLE: 0%"
+throttleLabel.Parent = telemetryPanel
+
+local dragLabel = Instance.new("TextLabel")
+dragLabel.Size = UDim2.new(1, -20, 0, 25)
+dragLabel.Position = UDim2.new(0, 10, 0, 65)
+dragLabel.BackgroundTransparency = 1
+dragLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+dragLabel.Font = Enum.Font.GothamMedium
+dragLabel.TextXAlignment = Enum.TextXAlignment.Left
+dragLabel.Text = "RESISTANCE: 0%"
+dragLabel.Parent = telemetryPanel
+
+local function updatePaperDollModel()
+	viewportFrame:ClearAllChildren()
+	if clonedModel then clonedModel:Destroy() end
+	if not character then return end
+	
+	local worldModel = Instance.new("WorldModel")
+	worldModel.Parent = viewportFrame
+	
+	character.Archivable = true
+	clonedModel = character:Clone()
+	character.Archivable = false
+	
+	for _, obj in pairs(clonedModel:GetDescendants()) do
+		if obj:IsA("LocalScript") or obj:IsA("Script") or obj:IsA("Animate") then
+			obj:Destroy()
+		elseif obj:IsA("BasePart") then
+			obj.CanCollide = false; obj.Anchored = true
+		end
+	end
+	
+	local hrp = clonedModel:FindFirstChild("HumanoidRootPart")
+	if hrp then
+		clonedModel.PrimaryPart = hrp
+		clonedModel:SetPrimaryPartCFrame(CFrame.new(0, 0, 0))
+		clonedModel.Parent = worldModel
+		viewportCamera.CFrame = CFrame.new(Vector3.new(2.2, 0.4, -4.5), Vector3.new(0, -0.2, 0))
+		viewportCamera.Focus = CFrame.new(Vector3.new(0, -0.2, 0))
+	else
+		task.wait(0.5)
+		updatePaperDollModel()
+	end
+end
+
+local function applyDeadzone(value, threshold)
+    if type(value) ~= "number" then return 0 end
+	if math.abs(value) < threshold then return 0 end
+	return value
+end
+
+local function updateModeUI()
+	if IS_ACRO_MODE then
+		modeLabel.Text = "MODE: FPV ACRO"
+		modeLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+		throttleLabel.Visible = true
+		dragLabel.Visible = true
+	else
+		modeLabel.Text = "MODE: STABLE"
+		modeLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+		throttleLabel.Visible = false
+		dragLabel.Visible = false
+	end
+end
+
+local function toggleDroneMode(forcedState)
+	if forcedState ~= nil then IS_DRONE_MODE = forcedState else IS_DRONE_MODE = not IS_DRONE_MODE end
+	
+	if IS_DRONE_MODE then
+		mainButton.Text = "DISABLE DRONE"; mainButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+		dollContainer.Visible = true; modeLabel.Visible = true; telemetryPanel.Visible = true; hudToggleButton.Visible = true
+		updateModeUI(); updatePaperDollModel()
+		
+		if humanoid then humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false); humanoid.Sit = false; humanoid.PlatformStand = true end
+		
+		currentVelocity = Vector3.new(0, 0, 0)
+		currentTiltX, currentTiltZ, cameraPitch, cameraYaw = 0, 0, 0, 0
+		fpvThrottle = 0
+		currentEngineAccel = BASE_ACCEL; currentEngineMaxSpeed = BASE_MAX_HORIZ; IS_NOCLIP_MODE = false
+		isLockingStandby = true; standbyAltitude = rootPart.Position.Y
+		
+		local camLook = camera.CFrame.LookVector
+		droneHeadingCFrame = CFrame.lookAt(Vector3.new(), Vector3.new(camLook.X, 0, camLook.Z).Unit)
+		cameraYaw = math.atan2(-camLook.X, -camLook.Z)
+		previousCameraYaw = cameraYaw
+		
+		if head then cameraTrackingCFrame = CFrame.new(head.Position) * droneHeadingCFrame.Rotation end
+		camera.CameraType = Enum.CameraType.Scriptable; UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+	else
+		mainButton.Text = "ENABLE DRONE"; mainButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+		dollContainer.Visible = false; modeLabel.Visible = false; telemetryPanel.Visible = false; hudToggleButton.Visible = false
+		if humanoid then humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true); humanoid.PlatformStand = false end
+		IS_NOCLIP_MODE = false 
+		
+		camera.CameraType = Enum.CameraType.Custom
+		if humanoid then camera.CameraSubject = humanoid end
+		
+		UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+		isLockingStandby = false
+		if character then
+			for _, child in pairs(character:GetDescendants()) do
+				if child:IsA("BasePart") then child.LocalTransparencyModifier = 0; child.CanCollide = true end
+			end
+		end
+	end
+end
+
+-- GUI Interactivity
+closeTelemetryBtn.MouseButton1Click:Connect(function() telemetryPanel.Visible = false end)
+hudToggleButton.MouseButton1Click:Connect(function() telemetryPanel.Visible = not telemetryPanel.Visible end)
+
+-- --- DRONE PHYSICS ENGINE ---
+local function updateDrone(rawDt)
+    -- BULLETPROOF FAILSAFES: Forces variables to default if they report as nil
+    local dt = (type(rawDt) == "number") and rawDt or 0.016
+    local safeSens = (type(CAMERA_STICK_SENSITIVITY) == "number") and CAMERA_STICK_SENSITIVITY or 2.5
+    local safeTurn = (type(TURN_SPEED) == "number") and TURN_SPEED or 4.5
+    local safePitchSpd = (type(KEYBOARD_PITCH_SPEED) == "number") and KEYBOARD_PITCH_SPEED or 2.2
+
+	if not IS_DRONE_MODE or not rootPart or not head or not character:FindFirstChild("Humanoid") then return end
+	if humanoid.Health <= 0 then return end 
+	if humanoid.Sit then humanoid.Sit = false end
+
+	if clonedModel and clonedModel.PrimaryPart then
+		local _, yawAngle, _ = droneHeadingCFrame:ToEulerAnglesYXZ()
+		clonedModel:SetPrimaryPartCFrame(CFrame.new(0, 0, 0) * CFrame.Angles(currentTiltX, yawAngle + math.rad(145), currentTiltZ))
+	end
+
+	for _, child in pairs(character:GetDescendants()) do
+		if child:IsA("BasePart") then
+			child.LocalTransparencyModifier = 1
+			child.CanCollide = not IS_NOCLIP_MODE
+		end
+	end
+
+	local isTyping = UserInputService:GetFocusedTextBox() ~= nil
+
+	-- --- CAMERA INPUT SYSTEM ENGINE ---
+	local lookInputY = 0
+	local gamepadYawInput = 0
+	
+	if not isTyping then
+		local mouseDelta = UserInputService:GetMouseDelta()
+		cameraPitch = cameraPitch - (mouseDelta.Y * 0.003)
+		cameraYaw = cameraYaw - (mouseDelta.X * 0.003) 
+		
+		if UserInputService:IsKeyDown(Enum.KeyCode.Up) then cameraPitch = cameraPitch + (safePitchSpd * dt) end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Down) then cameraPitch = cameraPitch - (safePitchSpd * dt) end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Left) then cameraYaw = cameraYaw + (safeTurn * 0.4 * dt) end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Right) then cameraYaw = cameraYaw - (safeTurn * 0.4 * dt) end
+	end
+
+	-- --- FLIGHT INPUT SYSTEM MAP ---
+	local moveInputX = 0 
+	local moveInputZ = 0 
+	local verticalInputY = 0 
+	
+	local isHoldingAccel = false
+	local isHoldingDecel = false
+	local rawThrottleDelta = 0
+	
+	if not isTyping then
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveInputZ = moveInputZ + 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveInputZ = moveInputZ - 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveInputX = moveInputX + 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveInputX = moveInputX - 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) then verticalInputY = verticalInputY + 1 end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then verticalInputY = verticalInputY - 1 end
+		
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then 
+			isHoldingAccel = true
+			rawThrottleDelta = rawThrottleDelta + 1 
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.LeftAlt) then 
+			isHoldingDecel = true
+			rawThrottleDelta = rawThrottleDelta - 1 
+		end
+	end
+
+	-- --- GAMEPAD POLLING MATRIX ---
+	if UserInputService:GetGamepadConnected(Enum.UserInputType.Gamepad1) then
+		local gamepadState = UserInputService:GetGamepadState(Enum.UserInputType.Gamepad1)
+		for _, input in pairs(gamepadState) do
+			if input.KeyCode == Enum.KeyCode.Thumbstick2 then
+				lookInputY = applyDeadzone(input.Position.Y, 0.15)
+				gamepadYawInput = applyDeadzone(input.Position.X, 0.15) * -1
+			elseif input.KeyCode == Enum.KeyCode.Thumbstick1 then
+				moveInputX = moveInputX + applyDeadzone(input.Position.X, 0.15)
+				moveInputZ = moveInputZ + applyDeadzone(input.Position.Y, 0.15)
+			
+			elseif input.KeyCode == Enum.KeyCode.ButtonR2 then
+				if input.Position.Z > 0.15 then 
+					isHoldingAccel = true
+					rawThrottleDelta = rawThrottleDelta + input.Position.Z
+				end
+			elseif input.KeyCode == Enum.KeyCode.ButtonL2 then
+				if input.Position.Z > 0.15 then 
+					isHoldingDecel = true
+					rawThrottleDelta = rawThrottleDelta - input.Position.Z
+				end
+				
+			elseif input.KeyCode == KEYBIND_NOCLIP_GAMEPAD and input.Position.Z == 1 then
+				local now = os.clock()
+				if now - lastGamepadNoclipPress > 0.4 then 
+					lastGamepadNoclipPress = now; IS_NOCLIP_MODE = not IS_NOCLIP_MODE
+				end
+			elseif input.KeyCode == KEYBIND_ACRO_GAMEPAD and input.Position.Z == 1 then
+				local now = os.clock()
+				if now - lastGamepadAcroPress > 0.4 then
+					lastGamepadAcroPress = now; IS_ACRO_MODE = not IS_ACRO_MODE; updateModeUI()
+				end
+			end
+		end
+		
+		if UserInputService:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonR1) then 
+			verticalInputY = 1
+		elseif UserInputService:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonL1) then 
+			verticalInputY = -1 
+		end
+	end
+	
+    local safeLookY = (type(lookInputY) == "number") and lookInputY or 0
+    local safeGamepadYaw = (type(gamepadYawInput) == "number") and gamepadYawInput or 0
+
+	cameraYaw = cameraYaw + (safeGamepadYaw * safeTurn * dt)
+	
+	if not IS_ACRO_MODE then
+		cameraPitch = math.clamp(cameraPitch + (safeLookY * safeSens * dt), math.rad(-75), math.rad(75))
+	else
+		cameraPitch = cameraPitch + (safeLookY * safeSens * dt)
+	end
+
+	local yawDelta = math.abs(cameraYaw - previousCameraYaw)
+	previousCameraYaw = cameraYaw
+
+	droneHeadingCFrame = CFrame.Angles(0, cameraYaw, 0)
+
+	-- --- AUTOMATIC FLIGHT-MODE ENGINE MATRIX ---
+	local targetAccel = BASE_ACCEL
+	local targetMaxSpeed = BASE_MAX_HORIZ
+	local speedScaleFactor = 1
+
+	if IS_ACRO_MODE then
+		fpvThrottle = math.clamp(fpvThrottle + (rawThrottleDelta * THROTTLE_SPEED * dt), 0, 1)
+		targetAccel = ACRO_ACCEL
+		targetMaxSpeed = ACRO_MAX_SPEED
+		speedScaleFactor = 1
+	else
+		if isHoldingAccel then
+			targetAccel = BOOST_ACCEL
+			targetMaxSpeed = BOOST_MAX_HORIZ
+			speedScaleFactor = ACCEL_MULTIPLIER
+		elseif isHoldingDecel then
+			targetAccel = BASE_ACCEL
+			targetMaxSpeed = BASE_MAX_HORIZ * DECEL_MULTIPLIER
+			speedScaleFactor = DECEL_MULTIPLIER
+		else
+			targetAccel = BASE_ACCEL
+			targetMaxSpeed = BASE_MAX_HORIZ
+		end
+	end
+
+	currentEngineAccel = currentEngineAccel + (targetAccel - currentEngineAccel) * ACCEL_TRANSITION_SPEED * dt
+	currentEngineMaxSpeed = currentEngineMaxSpeed + (targetMaxSpeed - currentEngineMaxSpeed) * ACCEL_TRANSITION_SPEED * dt
+
+	local activeCamRotation = CFrame.Angles(0, cameraYaw, 0) * CFrame.Angles(cameraPitch, 0, 0)
+	local movementForceVector = Vector3.new()
+	local activeFrictionMultiplier = 1
+
+	if IS_ACRO_MODE then
+		isLockingStandby = false
+		local forwardVector = activeCamRotation.LookVector
+		local rightVector = activeCamRotation.RightVector
+		local upVector = activeCamRotation.UpVector
+		
+		local dynamicThrustAngle = (forwardVector * 0.85 + upVector * 0.15).Unit
+		
+		movementForceVector = (dynamicThrustAngle * fpvThrottle) + (rightVector * moveInputX * 0.5) + (upVector * (verticalInputY * 0.3))
+		currentVelocity = currentVelocity + (movementForceVector * currentEngineAccel * dt)
+		
+		local currentAcroDrag = ACRO_AERO_DRAG
+		if fpvThrottle <= 0.1 and currentVelocity.Y < -15 then
+			currentAcroDrag = ACRO_STALL_DRAG
+		end
+		
+		local turnFriction = 1 - math.clamp(yawDelta * ACRO_TURN_BLEED, 0, 0.10) 
+		activeFrictionMultiplier = turnFriction * math.pow(currentAcroDrag, dt * 60)
+		
+		currentVelocity = currentVelocity * activeFrictionMultiplier
+	else
+		local flatForward = droneHeadingCFrame.LookVector
+		local flatRight = droneHeadingCFrame.RightVector
+		movementForceVector = (flatForward * moveInputZ * speedScaleFactor) + (flatRight * moveInputX * speedScaleFactor)
+		
+		if verticalInputY ~= 0 then
+			isLockingStandby = false
+		else
+			if not isLockingStandby and math.abs(currentVelocity.Y) < 4 then
+				standbyAltitude = rootPart.Position.Y; isLockingStandby = true
+			end
+		end
+		
+		local accelX = movementForceVector.X * currentEngineAccel
+		local accelY = verticalInputY * (currentEngineAccel * 1.2)
+		local accelZ = movementForceVector.Z * currentEngineAccel
+		currentVelocity = currentVelocity + Vector3.new(accelX * dt, accelY * dt, accelZ * dt)
+		
+		local horizVel = Vector3.new(currentVelocity.X, 0, currentVelocity.Z) * math.pow(HORIZONTAL_DRAG, dt * 60)
+		local vertVelY = currentVelocity.Y * math.pow(VERTICAL_DRAG, dt * 60)
+		currentVelocity = Vector3.new(horizVel.X, vertVelY, horizVel.Z)
+	end
+
+	if currentVelocity.Magnitude > currentEngineMaxSpeed then
+		currentVelocity = currentVelocity.Unit * currentEngineMaxSpeed
+	end
+
+	-- --- TELEMETRY UI UPDATES ---
+	local currentSpeed = math.floor(currentVelocity.Magnitude)
+	speedLabel.Text = "SPEED: " .. tostring(currentSpeed) .. " SPS"
+	
+	if IS_ACRO_MODE then
+		throttleLabel.Text = "THROTTLE: " .. tostring(math.floor(fpvThrottle * 100)) .. "%"
+		local resistancePercentage = 100 - (activeFrictionMultiplier * 100)
+		dragLabel.Text = "RESISTANCE: " .. string.format("%.1f", resistancePercentage) .. "%"
+	end
+
+	local calculatedPosition = rootPart.Position + (currentVelocity * dt)
+	
+	if isLockingStandby and not IS_ACRO_MODE then
+		calculatedPosition = Vector3.new(calculatedPosition.X, standbyAltitude, calculatedPosition.Z)
+		currentVelocity = Vector3.new(currentVelocity.X, 0, currentVelocity.Z)
+	end
+
+	local targetFlightPitch = -MAX_FLIGHT_PITCH * math.clamp(moveInputZ * speedScaleFactor, -1, 1)
+	local targetFlightRoll = -MAX_FLIGHT_ROLL * math.clamp(moveInputX * speedScaleFactor, -1, 1)
+	currentTiltX = currentTiltX + (targetFlightPitch - currentTiltX) * TILT_LERP_SPEED * dt
+	currentTiltZ = currentTiltZ + (targetFlightRoll - currentTiltZ) * TILT_LERP_SPEED * dt
+
+	rootPart.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+	rootPart.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+	
+	if IS_ACRO_MODE then
+		rootPart.CFrame = CFrame.new(calculatedPosition) * activeCamRotation
+	else
+		rootPart.CFrame = CFrame.new(calculatedPosition) * droneHeadingCFrame.Rotation * CFrame.Angles(currentTiltX, 0, currentTiltZ)
+	end
+
+	local idealCamCFrame = CFrame.new(head.Position) * activeCamRotation
+	local targetCamPos = cameraTrackingCFrame.Position:Lerp(idealCamCFrame.Position, CAM_POS_LERP_SPEED * dt)
+	local targetCamRot = cameraTrackingCFrame.Rotation:Lerp(idealCamCFrame.Rotation, CAM_ROT_LERP_SPEED * dt)
+	
+	cameraTrackingCFrame = CFrame.new(targetCamPos) * targetCamRot
+	camera.CameraType = Enum.CameraType.Scriptable
+	camera.CFrame = cameraTrackingCFrame
+end
+
+-- --- LIFE SYSTEMS MANAGEMENT ---
+local function setupCharacterTracking(char)
+	character = char; rootPart = char:WaitForChild("HumanoidRootPart"); head = char:WaitForChild("Head"); humanoid = char:WaitForChild("Humanoid")
+	
+	camera.CameraType = Enum.CameraType.Custom
+	if humanoid then camera.CameraSubject = humanoid end
+
+	toggleDroneMode(false)
+	if humanoidDiedConnection then humanoidDiedConnection:Disconnect() end
+	humanoidDiedConnection = humanoid.Died:Connect(function() 
+		toggleDroneMode(false) 
+		camera.CameraType = Enum.CameraType.Custom
+		if humanoid then camera.CameraSubject = humanoid end
+	end)
+end
+
+setupCharacterTracking(character)
+player.CharacterAdded:Connect(setupCharacterTracking)
+mainButton.MouseButton1Click:Connect(function() toggleDroneMode() end)
+
+-- --- KEYBOARD INTERCEPTOR ---
+UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
+	if input.KeyCode == Enum.KeyCode.ButtonSelect then toggleDroneMode(); return end
+	
+	if IS_DRONE_MODE and not gameProcessedEvent then
+		if input.KeyCode == KEYBIND_NOCLIP_KEYBOARD then
+			IS_NOCLIP_MODE = not IS_NOCLIP_MODE
+		elseif input.KeyCode == KEYBIND_ACRO_KEYBOARD then
+			IS_ACRO_MODE = not IS_ACRO_MODE
+			updateModeUI()
+		end
+	end
+end)
+
+RunService.RenderStepped:Connect(updateDrone)
