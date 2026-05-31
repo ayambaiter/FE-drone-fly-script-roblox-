@@ -1,4 +1,4 @@
--- Inertia-Isolated Balanced Drone Controller Script with Live Paper Doll HUD & FPV Acro Mode
+-- Inertia-Isolated Balanced Drone Controller Script with Live Paper Doll HUD, FPV Acro, Zoom, & WinXP ESP
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -17,31 +17,38 @@ local KEYBIND_NOCLIP_KEYBOARD = Enum.KeyCode.N
 local KEYBIND_NOCLIP_GAMEPAD  = Enum.KeyCode.ButtonA 
 local KEYBIND_ACRO_KEYBOARD   = Enum.KeyCode.M
 local KEYBIND_ACRO_GAMEPAD    = Enum.KeyCode.ButtonL3 
+local KEYBIND_ZOOM_KEYBOARD   = Enum.KeyCode.V
+local KEYBIND_ZOOM_GAMEPAD    = Enum.KeyCode.ButtonR3 
+local KEYBIND_ESP_KEYBOARD    = Enum.KeyCode.Z
+local KEYBIND_ESP_GAMEPAD     = Enum.KeyCode.ButtonY
 
 -- --- DRONE TUNING CONFIGURATIONS ---
 local IS_DRONE_MODE = false
 local IS_NOCLIP_MODE = false       
 local IS_ACRO_MODE = false 
+local IS_ZOOMED = false
+local IS_ESP_ACTIVE = false
+local HAS_SAID_HELLO = false
 
 local TURN_SPEED = 4.5         
 local ACCEL_TRANSITION_SPEED = 3.5 
 
--- Dynamic Speed Multipliers (Stable Mode)
+-- Dynamic Speed Multipliers
 local ACCEL_MULTIPLIER = 2.3       
 local DECEL_MULTIPLIER = 0.3 
 
--- Base Mode Configuration Constants (Stable)
+-- Base Mode Configuration Constants
 local BASE_ACCEL = 400             
 local BOOST_ACCEL = 950           
 local BASE_MAX_HORIZ = 140
 local BOOST_MAX_HORIZ = 450
 local MAX_VERTICAL_SPEED = 90
 
--- FPV Racing Configuration Constants (Realistic Aerodynamics)
+-- FPV Racing Configuration Constants
 local ACRO_ACCEL = 1600            
 local ACRO_MAX_SPEED = 450         
 local ACRO_AERO_DRAG = 0.985       
-local ACRO_STALL_DRAG = 0.965      
+local ACRO_STALL_DRAG = 0.950      
 local ACRO_TURN_BLEED = 0.85       
 local THROTTLE_SPEED = 1.8         
 
@@ -49,6 +56,8 @@ local THROTTLE_SPEED = 1.8
 local currentEngineAccel = BASE_ACCEL
 local currentEngineMaxSpeed = BASE_MAX_HORIZ
 local fpvThrottle = 0 
+local baseFov = 70
+local zoomFov = 30
 
 local HORIZONTAL_DRAG = 0.962      
 local VERTICAL_DRAG = 0.94         
@@ -61,6 +70,7 @@ local KEYBOARD_PITCH_SPEED = 2.2
 local TILT_LERP_SPEED = 6.0       
 local CAM_POS_LERP_SPEED = 14   
 local CAM_ROT_LERP_SPEED = 6.0    
+local ZOOM_LERP_SPEED = 12.0
 
 local currentVelocity = Vector3.new()
 local droneHeadingCFrame = CFrame.new() 
@@ -78,6 +88,21 @@ local isLockingStandby = false
 local humanoidDiedConnection = nil
 local lastGamepadNoclipPress = 0 
 local lastGamepadAcroPress = 0
+local lastGamepadZoomPress = 0
+local lastGamepadEspPress = 0
+
+-- Controller Hold Toggle Variables & Stall Tracker
+local isHoldingGamepadX = false
+local gamepadXHoldStartTime = 0
+local HOLD_TIME_REQUIRED = 3.0
+local currentStallTime = 0
+
+-- --- WIN XP COLOR PALETTE ---
+local XP_BLUE = Color3.fromRGB(0, 84, 227)
+local XP_BEIGE = Color3.fromRGB(236, 233, 216)
+local XP_BORDER = Color3.fromRGB(10, 36, 106)
+local XP_RED = Color3.fromRGB(224, 67, 67)
+local ESP_DARK_GREEN = Color3.fromRGB(0, 130, 0)
 
 -- --- CREATE GUI MASTER ---
 local screenGui = Instance.new("ScreenGui")
@@ -86,72 +111,121 @@ screenGui.ResetOnSpawn = true
 screenGui.Parent = player:WaitForChild("PlayerGui")
 
 local mainButton = Instance.new("TextButton")
-mainButton.Size = UDim2.new(0, 150, 0, 45)
+mainButton.Size = UDim2.new(0, 150, 0, 35)
 mainButton.Position = UDim2.new(0.5, -75, 0.85, 0)
-mainButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-mainButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-mainButton.Font = Enum.Font.GothamBold
+mainButton.BackgroundColor3 = Color3.fromRGB(212, 208, 200)
+mainButton.BorderColor3 = Color3.fromRGB(128, 128, 128)
+mainButton.BorderSizePixel = 2
+mainButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+mainButton.Font = Enum.Font.ArialBold
 mainButton.TextSize = 14
 mainButton.Text = "ENABLE DRONE"
-mainButton.BorderSizePixel = 0
 mainButton.Modal = true 
-
-local uiCornerMain = Instance.new("UICorner")
-uiCornerMain.CornerRadius = UDim.new(0, 8)
-uiCornerMain.Parent = mainButton
 mainButton.Parent = screenGui
 
 -- HUD Toggle Button
 local hudToggleButton = Instance.new("TextButton")
-hudToggleButton.Size = UDim2.new(0, 50, 0, 45)
+hudToggleButton.Size = UDim2.new(0, 50, 0, 35)
 hudToggleButton.Position = UDim2.new(0.5, 85, 0.85, 0)
-hudToggleButton.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-hudToggleButton.TextColor3 = Color3.fromRGB(200, 200, 200)
-hudToggleButton.Font = Enum.Font.GothamBold
+hudToggleButton.BackgroundColor3 = Color3.fromRGB(212, 208, 200)
+hudToggleButton.BorderColor3 = Color3.fromRGB(128, 128, 128)
+hudToggleButton.BorderSizePixel = 2
+hudToggleButton.TextColor3 = Color3.fromRGB(0, 0, 0)
+hudToggleButton.Font = Enum.Font.ArialBold
 hudToggleButton.TextSize = 12
 hudToggleButton.Text = "HUD"
-hudToggleButton.BorderSizePixel = 0
 hudToggleButton.Visible = false
 hudToggleButton.Parent = screenGui
 
-local uiCornerHudBtn = Instance.new("UICorner")
-uiCornerHudBtn.CornerRadius = UDim.new(0, 8)
-uiCornerHudBtn.Parent = hudToggleButton
+-- Progress Bar UI for Controller Boot
+local holdBarBg = Instance.new("Frame")
+holdBarBg.Size = UDim2.new(0, 200, 0, 24)
+holdBarBg.Position = UDim2.new(0.5, -100, 0.75, 0)
+holdBarBg.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+holdBarBg.BorderColor3 = Color3.fromRGB(128, 128, 128)
+holdBarBg.BorderSizePixel = 2
+holdBarBg.Visible = false
+holdBarBg.Parent = screenGui
+
+local holdBarFill = Instance.new("Frame")
+holdBarFill.Size = UDim2.new(0, 0, 1, 0)
+holdBarFill.BackgroundColor3 = XP_BLUE
+holdBarFill.BorderSizePixel = 0
+holdBarFill.Parent = holdBarBg
+
+local holdText = Instance.new("TextLabel")
+holdText.Size = UDim2.new(1, 0, 1, 0)
+holdText.BackgroundTransparency = 1
+holdText.Font = Enum.Font.Code
+holdText.TextSize = 14
+holdText.TextColor3 = Color3.fromRGB(0, 0, 0)
+holdText.TextStrokeTransparency = 1
+holdText.Text = "INITIATING..."
+holdText.Parent = holdBarBg
 
 -- Mode Indicator UI
 local modeLabel = Instance.new("TextLabel")
 modeLabel.Size = UDim2.new(0, 200, 0, 30)
 modeLabel.Position = UDim2.new(0.5, -100, 0.80, -5)
 modeLabel.BackgroundTransparency = 1
-modeLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
-modeLabel.Font = Enum.Font.GothamBold
-modeLabel.TextSize = 14
+modeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+modeLabel.TextStrokeTransparency = 0
+modeLabel.Font = Enum.Font.Code
+modeLabel.TextSize = 16
 modeLabel.Text = "MODE: STABLE"
 modeLabel.Visible = false
 modeLabel.Parent = screenGui
 
--- --- MINECRAFT PAPER DOLL ---
+-- --- STALL WARNING UI ---
+local stallWarningLabel = Instance.new("TextLabel")
+stallWarningLabel.Size = UDim2.new(0, 400, 0, 80)
+stallWarningLabel.Position = UDim2.new(0.5, -200, 0.3, 0)
+stallWarningLabel.BackgroundTransparency = 1
+stallWarningLabel.TextColor3 = Color3.fromRGB(255, 20, 20)
+stallWarningLabel.TextStrokeColor3 = Color3.fromRGB(50, 0, 0)
+stallWarningLabel.TextStrokeTransparency = 0
+stallWarningLabel.Font = Enum.Font.ArialBold
+stallWarningLabel.TextSize = 48
+stallWarningLabel.Text = "STALL WARNING"
+stallWarningLabel.Visible = false
+stallWarningLabel.Parent = screenGui
+
+-- --- MINECRAFT PAPER DOLL (WIN XP WINDOW) ---
 local dollContainer = Instance.new("Frame")
 dollContainer.Name = "PaperDollHUD"
 dollContainer.Size = UDim2.new(0, 200, 0, 260)
 dollContainer.Position = UDim2.new(0, 20, 0, 20)
-dollContainer.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
-dollContainer.BackgroundTransparency = 0.4
-dollContainer.BorderSizePixel = 0
+dollContainer.BackgroundColor3 = XP_BEIGE
+dollContainer.BorderColor3 = XP_BORDER
+dollContainer.BorderSizePixel = 2
 dollContainer.Active = true
 dollContainer.Draggable = true 
 dollContainer.Visible = false  
 dollContainer.Parent = screenGui
 
-local uiCornerDoll = Instance.new("UICorner")
-uiCornerDoll.CornerRadius = UDim.new(0, 12)
-uiCornerDoll.Parent = dollContainer
+local dollTitleBar = Instance.new("Frame")
+dollTitleBar.Size = UDim2.new(1, 0, 0, 22)
+dollTitleBar.BackgroundColor3 = XP_BLUE
+dollTitleBar.BorderSizePixel = 0
+dollTitleBar.Parent = dollContainer
+
+local dollTitle = Instance.new("TextLabel")
+dollTitle.Size = UDim2.new(1, -10, 1, 0)
+dollTitle.Position = UDim2.new(0, 5, 0, 0)
+dollTitle.BackgroundTransparency = 1
+dollTitle.Text = "3D Viewer"
+dollTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+dollTitle.Font = Enum.Font.ArialBold
+dollTitle.TextSize = 12
+dollTitle.TextXAlignment = Enum.TextXAlignment.Left
+dollTitle.Parent = dollTitleBar
 
 local viewportFrame = Instance.new("ViewportFrame")
-viewportFrame.Size = UDim2.new(1, 0, 1, -10)
-viewportFrame.Position = UDim2.new(0, 0, 0, 5)
-viewportFrame.BackgroundTransparency = 1
-viewportFrame.BorderSizePixel = 0
+viewportFrame.Size = UDim2.new(1, -10, 1, -32)
+viewportFrame.Position = UDim2.new(0, 5, 0, 27)
+viewportFrame.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+viewportFrame.BorderColor3 = Color3.fromRGB(128, 128, 128)
+viewportFrame.BorderSizePixel = 2
 viewportFrame.Parent = dollContainer
 
 local viewportCamera = Instance.new("Camera")
@@ -161,66 +235,151 @@ viewportCamera.Parent = viewportFrame
 
 local clonedModel = nil
 
--- --- TELEMETRY DASHBOARD ---
+-- --- TELEMETRY DASHBOARD & SLIDER (WIN XP WINDOW) ---
 local telemetryPanel = Instance.new("Frame")
 telemetryPanel.Name = "TelemetryHUD"
-telemetryPanel.Size = UDim2.new(0, 220, 0, 100)
-telemetryPanel.Position = UDim2.new(1, -240, 1, -160)
-telemetryPanel.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-telemetryPanel.BackgroundTransparency = 0.5
-telemetryPanel.BorderSizePixel = 0
+telemetryPanel.Size = UDim2.new(0, 220, 0, 185) 
+telemetryPanel.Position = UDim2.new(1, -240, 1, -240)
+telemetryPanel.BackgroundColor3 = XP_BEIGE
+telemetryPanel.BorderColor3 = XP_BORDER
+telemetryPanel.BorderSizePixel = 2
 telemetryPanel.Active = true
 telemetryPanel.Draggable = true
 telemetryPanel.Visible = false
 telemetryPanel.Parent = screenGui
 
-local uiCornerTelemetry = Instance.new("UICorner")
-uiCornerTelemetry.CornerRadius = UDim.new(0, 8)
-uiCornerTelemetry.Parent = telemetryPanel
+local telTitleBar = Instance.new("Frame")
+telTitleBar.Size = UDim2.new(1, 0, 0, 22)
+telTitleBar.BackgroundColor3 = XP_BLUE
+telTitleBar.BorderSizePixel = 0
+telTitleBar.Parent = telemetryPanel
+
+local telTitle = Instance.new("TextLabel")
+telTitle.Size = UDim2.new(1, -30, 1, 0)
+telTitle.Position = UDim2.new(0, 5, 0, 0)
+telTitle.BackgroundTransparency = 1
+telTitle.Text = "Drone Telemetry"
+telTitle.TextColor3 = Color3.fromRGB(255, 255, 255)
+telTitle.Font = Enum.Font.ArialBold
+telTitle.TextSize = 12
+telTitle.TextXAlignment = Enum.TextXAlignment.Left
+telTitle.Parent = telTitleBar
 
 local closeTelemetryBtn = Instance.new("TextButton")
-closeTelemetryBtn.Size = UDim2.new(0, 24, 0, 24)
-closeTelemetryBtn.Position = UDim2.new(1, -28, 0, 4)
-closeTelemetryBtn.BackgroundColor3 = Color3.fromRGB(180, 50, 50)
-closeTelemetryBtn.BackgroundTransparency = 0.2
+closeTelemetryBtn.Size = UDim2.new(0, 21, 0, 21)
+closeTelemetryBtn.Position = UDim2.new(1, -21, 0, 0)
+closeTelemetryBtn.BackgroundColor3 = XP_RED
+closeTelemetryBtn.BorderSizePixel = 1
+closeTelemetryBtn.BorderColor3 = Color3.fromRGB(255, 255, 255)
 closeTelemetryBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-closeTelemetryBtn.Font = Enum.Font.GothamBold
-closeTelemetryBtn.Text = "✕"
-closeTelemetryBtn.Parent = telemetryPanel
-
-local uiCornerCloseT = Instance.new("UICorner")
-uiCornerCloseT.CornerRadius = UDim.new(1, 0)
-uiCornerCloseT.Parent = closeTelemetryBtn
+closeTelemetryBtn.Font = Enum.Font.ArialBold
+closeTelemetryBtn.Text = "X"
+closeTelemetryBtn.Parent = telTitleBar
 
 local speedLabel = Instance.new("TextLabel")
 speedLabel.Size = UDim2.new(1, -20, 0, 25)
-speedLabel.Position = UDim2.new(0, 10, 0, 15)
+speedLabel.Position = UDim2.new(0, 10, 0, 30)
 speedLabel.BackgroundTransparency = 1
-speedLabel.TextColor3 = Color3.fromRGB(100, 255, 150)
-speedLabel.Font = Enum.Font.GothamMedium
+speedLabel.TextColor3 = Color3.fromRGB(0, 0, 0)
+speedLabel.Font = Enum.Font.Code
+speedLabel.TextSize = 14
 speedLabel.TextXAlignment = Enum.TextXAlignment.Left
 speedLabel.Text = "SPEED: 0 SPS"
 speedLabel.Parent = telemetryPanel
 
+local altitudeLabel = Instance.new("TextLabel")
+altitudeLabel.Size = UDim2.new(1, -20, 0, 25)
+altitudeLabel.Position = UDim2.new(0, 10, 0, 55)
+altitudeLabel.BackgroundTransparency = 1
+altitudeLabel.TextColor3 = Color3.fromRGB(0, 0, 0)
+altitudeLabel.Font = Enum.Font.Code
+altitudeLabel.TextSize = 14
+altitudeLabel.TextXAlignment = Enum.TextXAlignment.Left
+altitudeLabel.Text = "ALTITUDE: 0 STUDS"
+altitudeLabel.Parent = telemetryPanel
+
 local throttleLabel = Instance.new("TextLabel")
 throttleLabel.Size = UDim2.new(1, -20, 0, 25)
-throttleLabel.Position = UDim2.new(0, 10, 0, 40)
+throttleLabel.Position = UDim2.new(0, 10, 0, 80)
 throttleLabel.BackgroundTransparency = 1
-throttleLabel.TextColor3 = Color3.fromRGB(255, 200, 50)
-throttleLabel.Font = Enum.Font.GothamMedium
+throttleLabel.TextColor3 = Color3.fromRGB(0, 0, 150)
+throttleLabel.Font = Enum.Font.Code
+throttleLabel.TextSize = 14
 throttleLabel.TextXAlignment = Enum.TextXAlignment.Left
 throttleLabel.Text = "THROTTLE: 0%"
 throttleLabel.Parent = telemetryPanel
 
 local dragLabel = Instance.new("TextLabel")
 dragLabel.Size = UDim2.new(1, -20, 0, 25)
-dragLabel.Position = UDim2.new(0, 10, 0, 65)
+dragLabel.Position = UDim2.new(0, 10, 0, 105)
 dragLabel.BackgroundTransparency = 1
-dragLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-dragLabel.Font = Enum.Font.GothamMedium
+dragLabel.TextColor3 = Color3.fromRGB(150, 0, 0)
+dragLabel.Font = Enum.Font.Code
+dragLabel.TextSize = 14
 dragLabel.TextXAlignment = Enum.TextXAlignment.Left
 dragLabel.Text = "RESISTANCE: 0%"
 dragLabel.Parent = telemetryPanel
+
+-- FOV Slider
+local fovTitleLabel = Instance.new("TextLabel")
+fovTitleLabel.Size = UDim2.new(1, -20, 0, 20)
+fovTitleLabel.Position = UDim2.new(0, 10, 0, 135)
+fovTitleLabel.BackgroundTransparency = 1
+fovTitleLabel.TextColor3 = Color3.fromRGB(0, 0, 0)
+fovTitleLabel.Font = Enum.Font.Code
+fovTitleLabel.TextSize = 14
+fovTitleLabel.TextXAlignment = Enum.TextXAlignment.Left
+fovTitleLabel.Text = "BASE FOV: 70"
+fovTitleLabel.Parent = telemetryPanel
+
+local fovSliderBg = Instance.new("Frame")
+fovSliderBg.Size = UDim2.new(1, -20, 0, 12)
+fovSliderBg.Position = UDim2.new(0, 10, 0, 160)
+fovSliderBg.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+fovSliderBg.BorderColor3 = Color3.fromRGB(128, 128, 128)
+fovSliderBg.BorderSizePixel = 2
+fovSliderBg.Parent = telemetryPanel
+
+local fovSliderFill = Instance.new("Frame")
+fovSliderFill.Size = UDim2.new(0.5, 0, 1, 0)
+fovSliderFill.BackgroundColor3 = XP_BLUE
+fovSliderFill.BorderSizePixel = 0
+fovSliderFill.Parent = fovSliderBg
+
+-- Slider Interactivity
+local isDraggingSlider = false
+fovSliderBg.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		isDraggingSlider = true
+	end
+end)
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		isDraggingSlider = false
+	end
+end)
+UserInputService.InputChanged:Connect(function(input)
+	if isDraggingSlider and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+		local mouseX = UserInputService:GetMouseLocation().X
+		local sliderX = fovSliderBg.AbsolutePosition.X
+		local sliderWidth = fovSliderBg.AbsoluteSize.X
+		local pct = math.clamp((mouseX - sliderX) / sliderWidth, 0, 1)
+		baseFov = math.floor(30 + (pct * 90)) 
+		fovSliderFill.Size = UDim2.new(pct, 0, 1, 0)
+		fovTitleLabel.Text = "BASE FOV: " .. baseFov
+	end
+end)
+
+-- --- RETRO ESP CONTAINER ---
+local espContainer = Instance.new("Frame")
+espContainer.Name = "EspContainer"
+espContainer.Size = UDim2.new(1, 0, 1, 0)
+espContainer.BackgroundTransparency = 1
+espContainer.Visible = false
+espContainer.Parent = screenGui
+
+local activeEspBoxes = {}
+local lastEspTick = 0
 
 local function updatePaperDollModel()
 	viewportFrame:ClearAllChildren()
@@ -238,7 +397,8 @@ local function updatePaperDollModel()
 		if obj:IsA("LocalScript") or obj:IsA("Script") or obj:IsA("Animate") then
 			obj:Destroy()
 		elseif obj:IsA("BasePart") then
-			obj.CanCollide = false; obj.Anchored = true
+			obj.CanCollide = false
+			obj.Anchored = true
 		end
 	end
 	
@@ -279,16 +439,52 @@ local function toggleDroneMode(forcedState)
 	if forcedState ~= nil then IS_DRONE_MODE = forcedState else IS_DRONE_MODE = not IS_DRONE_MODE end
 	
 	if IS_DRONE_MODE then
-		mainButton.Text = "DISABLE DRONE"; mainButton.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+		mainButton.Text = "DISABLE DRONE"
 		dollContainer.Visible = true; modeLabel.Visible = true; telemetryPanel.Visible = true; hudToggleButton.Visible = true
-		updateModeUI(); updatePaperDollModel()
+		updateModeUI()
+		updatePaperDollModel()
+		
+		-- Easter Egg Logic
+		if not HAS_SAID_HELLO then
+			HAS_SAID_HELLO = true
+			task.spawn(function()
+				task.wait(0.8)
+				if not IS_DRONE_MODE then return end
+				
+				local speechBubble = Instance.new("Frame")
+				speechBubble.Size = UDim2.new(0, 70, 0, 26)
+				speechBubble.Position = UDim2.new(0.5, 15, 0.25, 0)
+				speechBubble.BackgroundColor3 = Color3.fromRGB(255, 255, 225) 
+				speechBubble.BorderColor3 = Color3.fromRGB(0, 0, 0)
+				speechBubble.BorderSizePixel = 2
+				speechBubble.ZIndex = 10
+				
+				local speechText = Instance.new("TextLabel")
+				speechText.Size = UDim2.new(1, 0, 1, 0)
+				speechText.BackgroundTransparency = 1
+				speechText.Font = Enum.Font.Code
+				speechText.Text = "hello!"
+				speechText.TextSize = 14
+				speechText.TextColor3 = Color3.fromRGB(0, 0, 0)
+				speechText.ZIndex = 11
+				speechText.Parent = speechBubble
+				
+				speechBubble.Parent = dollContainer
+				
+				task.delay(3, function()
+					if speechBubble then speechBubble:Destroy() end
+				end)
+			end)
+		end
 		
 		if humanoid then humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, false); humanoid.Sit = false; humanoid.PlatformStand = true end
 		
 		currentVelocity = Vector3.new(0, 0, 0)
 		currentTiltX, currentTiltZ, cameraPitch, cameraYaw = 0, 0, 0, 0
 		fpvThrottle = 0
-		currentEngineAccel = BASE_ACCEL; currentEngineMaxSpeed = BASE_MAX_HORIZ; IS_NOCLIP_MODE = false
+		currentStallTime = 0
+		currentEngineAccel = BASE_ACCEL
+		currentEngineMaxSpeed = BASE_MAX_HORIZ; IS_NOCLIP_MODE = false
 		isLockingStandby = true; standbyAltitude = rootPart.Position.Y
 		
 		local camLook = camera.CFrame.LookVector
@@ -297,10 +493,14 @@ local function toggleDroneMode(forcedState)
 		previousCameraYaw = cameraYaw
 		
 		if head then cameraTrackingCFrame = CFrame.new(head.Position) * droneHeadingCFrame.Rotation end
-		camera.CameraType = Enum.CameraType.Scriptable; UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
+		camera.CameraType = Enum.CameraType.Scriptable
+		UserInputService.MouseBehavior = Enum.MouseBehavior.LockCenter
 	else
-		mainButton.Text = "ENABLE DRONE"; mainButton.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-		dollContainer.Visible = false; modeLabel.Visible = false; telemetryPanel.Visible = false; hudToggleButton.Visible = false
+		mainButton.Text = "ENABLE DRONE"
+		dollContainer.Visible = false; modeLabel.Visible = false; telemetryPanel.Visible = false
+		hudToggleButton.Visible = false; espContainer.Visible = false; stallWarningLabel.Visible = false
+		IS_ZOOMED = false; IS_ESP_ACTIVE = false; currentStallTime = 0
+		
 		if humanoid then humanoid:SetStateEnabled(Enum.HumanoidStateType.Seated, true); humanoid.PlatformStand = false end
 		IS_NOCLIP_MODE = false 
 		
@@ -311,19 +511,18 @@ local function toggleDroneMode(forcedState)
 		isLockingStandby = false
 		if character then
 			for _, child in pairs(character:GetDescendants()) do
-				if child:IsA("BasePart") then child.LocalTransparencyModifier = 0; child.CanCollide = true end
+				if child:IsA("BasePart") then child.LocalTransparencyModifier = 0
+					child.CanCollide = true end
 			end
 		end
 	end
 end
 
--- GUI Interactivity
 closeTelemetryBtn.MouseButton1Click:Connect(function() telemetryPanel.Visible = false end)
 hudToggleButton.MouseButton1Click:Connect(function() telemetryPanel.Visible = not telemetryPanel.Visible end)
 
 -- --- DRONE PHYSICS ENGINE ---
 local function updateDrone(rawDt)
-    -- BULLETPROOF FAILSAFES: Forces variables to default if they report as nil
     local dt = (type(rawDt) == "number") and rawDt or 0.016
     local safeSens = (type(CAMERA_STICK_SENSITIVITY) == "number") and CAMERA_STICK_SENSITIVITY or 2.5
     local safeTurn = (type(TURN_SPEED) == "number") and TURN_SPEED or 4.5
@@ -331,7 +530,71 @@ local function updateDrone(rawDt)
 
 	if not IS_DRONE_MODE or not rootPart or not head or not character:FindFirstChild("Humanoid") then return end
 	if humanoid.Health <= 0 then return end 
-	if humanoid.Sit then humanoid.Sit = false end
+
+	-- Scope Zoom Lerp Animation
+	local targetFov = IS_ZOOMED and zoomFov or baseFov
+	camera.FieldOfView = camera.FieldOfView + (targetFov - camera.FieldOfView) * ZOOM_LERP_SPEED * dt
+
+	-- Laggy Retro FULL BODY ESP Logic (~20 FPS)
+	espContainer.Visible = IS_ESP_ACTIVE
+	if IS_ESP_ACTIVE then
+		if os.clock() - lastEspTick > 0.05 then 
+			lastEspTick = os.clock()
+			
+			for _, box in pairs(activeEspBoxes) do box:Destroy() end
+			table.clear(activeEspBoxes)
+			
+			for _, p in pairs(Players:GetPlayers()) do
+				if p ~= player and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+					local targRoot = p.Character.HumanoidRootPart
+					local dist = (targRoot.Position - rootPart.Position).Magnitude
+					
+					if dist <= 500 then
+						local hrpPos = targRoot.Position
+						
+						local headPos = hrpPos + Vector3.new(0, 3.5, 0)
+						local feetPos = hrpPos - Vector3.new(0, 3.5, 0)
+						
+						local topScreen, topVis = camera:WorldToViewportPoint(headPos)
+						local bottomScreen, bottomVis = camera:WorldToViewportPoint(feetPos)
+						local centerScreen, centerVis = camera:WorldToViewportPoint(hrpPos)
+						
+						if topVis or bottomVis or centerVis then
+							local height = math.max(math.abs(bottomScreen.Y - topScreen.Y), 10)
+							local width = height * 0.65 
+							
+							local speedSps = math.floor(targRoot.AssemblyLinearVelocity.Magnitude)
+							
+							local espBox = Instance.new("Frame")
+							espBox.Size = UDim2.new(0, width, 0, height)
+							espBox.AnchorPoint = Vector2.new(0.5, 0) 
+							espBox.Position = UDim2.new(0, topScreen.X, 0, topScreen.Y)
+							espBox.BackgroundTransparency = 1
+							
+							local stroke = Instance.new("UIStroke")
+							stroke.Color = ESP_DARK_GREEN 
+							stroke.Thickness = 2
+							stroke.Parent = espBox
+							
+							local speedTxt = Instance.new("TextLabel")
+							speedTxt.Text = tostring(speedSps) .. " SPS"
+							speedTxt.Font = Enum.Font.Code 
+							speedTxt.TextSize = 14
+							speedTxt.TextColor3 = ESP_DARK_GREEN
+							speedTxt.Position = UDim2.new(0, 0, 0, -20)
+							speedTxt.Size = UDim2.new(1, 0, 0, 20)
+							speedTxt.BackgroundTransparency = 1
+							speedTxt.TextStrokeTransparency = 0
+							speedTxt.Parent = espBox
+							
+							espBox.Parent = espContainer
+							table.insert(activeEspBoxes, espBox)
+						end
+					end
+				end
+			end
+		end
+	end
 
 	if clonedModel and clonedModel.PrimaryPart then
 		local _, yawAngle, _ = droneHeadingCFrame:ToEulerAnglesYXZ()
@@ -414,12 +677,26 @@ local function updateDrone(rawDt)
 			elseif input.KeyCode == KEYBIND_NOCLIP_GAMEPAD and input.Position.Z == 1 then
 				local now = os.clock()
 				if now - lastGamepadNoclipPress > 0.4 then 
-					lastGamepadNoclipPress = now; IS_NOCLIP_MODE = not IS_NOCLIP_MODE
+					lastGamepadNoclipPress = now
+					IS_NOCLIP_MODE = not IS_NOCLIP_MODE
 				end
 			elseif input.KeyCode == KEYBIND_ACRO_GAMEPAD and input.Position.Z == 1 then
 				local now = os.clock()
 				if now - lastGamepadAcroPress > 0.4 then
-					lastGamepadAcroPress = now; IS_ACRO_MODE = not IS_ACRO_MODE; updateModeUI()
+					lastGamepadAcroPress = now
+					IS_ACRO_MODE = not IS_ACRO_MODE; updateModeUI()
+				end
+			elseif input.KeyCode == KEYBIND_ZOOM_GAMEPAD and input.Position.Z == 1 then
+				local now = os.clock()
+				if now - lastGamepadZoomPress > 0.4 then
+					lastGamepadZoomPress = now
+					IS_ZOOMED = not IS_ZOOMED
+				end
+			elseif input.KeyCode == KEYBIND_ESP_GAMEPAD and input.Position.Z == 1 then
+				local now = os.clock()
+				if now - lastGamepadEspPress > 0.4 then
+					lastGamepadEspPress = now
+					IS_ESP_ACTIVE = not IS_ESP_ACTIVE
 				end
 			end
 		end
@@ -451,11 +728,15 @@ local function updateDrone(rawDt)
 	local targetAccel = BASE_ACCEL
 	local targetMaxSpeed = BASE_MAX_HORIZ
 	local speedScaleFactor = 1
+	local isCurrentlyStalling = false
 
 	if IS_ACRO_MODE then
 		fpvThrottle = math.clamp(fpvThrottle + (rawThrottleDelta * THROTTLE_SPEED * dt), 0, 1)
+		
 		targetAccel = ACRO_ACCEL
-		targetMaxSpeed = ACRO_MAX_SPEED
+		local throttleSpeedCurve = 0.4 + (math.pow(fpvThrottle, 1.5) * 2.0)
+		targetMaxSpeed = ACRO_MAX_SPEED * throttleSpeedCurve
+		
 		speedScaleFactor = 1
 	else
 		if isHoldingAccel then
@@ -490,13 +771,24 @@ local function updateDrone(rawDt)
 		movementForceVector = (dynamicThrustAngle * fpvThrottle) + (rightVector * moveInputX * 0.5) + (upVector * (verticalInputY * 0.3))
 		currentVelocity = currentVelocity + (movementForceVector * currentEngineAccel * dt)
 		
-		local currentAcroDrag = ACRO_AERO_DRAG
-		if fpvThrottle <= 0.1 and currentVelocity.Y < -15 then
-			currentAcroDrag = ACRO_STALL_DRAG
-		end
+		-- PROGRESSIVE MULTI-DIRECTIONAL STALL MECHANICS
+		local isFallingFast = currentVelocity.Y < -12
+		local isAscending = currentVelocity.Y > 5
+		local isSidewaysOrUpsideDown = upVector.Y < 0.5 -- Triggers if tilted more than 60 degrees
 		
-		local turnFriction = 1 - math.clamp(yawDelta * ACRO_TURN_BLEED, 0, 0.10) 
-		activeFrictionMultiplier = turnFriction * math.pow(currentAcroDrag, dt * 60)
+		if fpvThrottle < 0.25 and (isFallingFast or isAscending or isSidewaysOrUpsideDown) then
+			isCurrentlyStalling = true
+			currentStallTime = currentStallTime + dt
+			activeFrictionMultiplier = ACRO_STALL_DRAG
+			
+			-- Progressive Gravity: Starts at -60 and grows by -100 studs per second of stall
+			local progressiveGravity = -60 - (currentStallTime * 100)
+			currentVelocity = currentVelocity + (Vector3.new(0, progressiveGravity, 0) * dt)
+		else
+			currentStallTime = 0 -- Instantly clear the stall timer when safe
+			local turnFriction = 1 - math.clamp(yawDelta * ACRO_TURN_BLEED, 0, 0.10) 
+			activeFrictionMultiplier = turnFriction * math.pow(ACRO_AERO_DRAG, dt * 60)
+		end
 		
 		currentVelocity = currentVelocity * activeFrictionMultiplier
 	else
@@ -508,7 +800,8 @@ local function updateDrone(rawDt)
 			isLockingStandby = false
 		else
 			if not isLockingStandby and math.abs(currentVelocity.Y) < 4 then
-				standbyAltitude = rootPart.Position.Y; isLockingStandby = true
+				standbyAltitude = rootPart.Position.Y
+				isLockingStandby = true
 			end
 		end
 		
@@ -526,9 +819,21 @@ local function updateDrone(rawDt)
 		currentVelocity = currentVelocity.Unit * currentEngineMaxSpeed
 	end
 
+	-- --- UI WARNING UPDATES ---
+	if isCurrentlyStalling then
+		stallWarningLabel.Visible = true
+		-- Fast blinking effect
+		stallWarningLabel.TextTransparency = math.sin(os.clock() * 20) > 0 and 0 or 0.7
+	else
+		stallWarningLabel.Visible = false
+	end
+
 	-- --- TELEMETRY UI UPDATES ---
 	local currentSpeed = math.floor(currentVelocity.Magnitude)
 	speedLabel.Text = "SPEED: " .. tostring(currentSpeed) .. " SPS"
+	
+	local currentAltitude = math.floor(rootPart.Position.Y)
+	altitudeLabel.Text = "ALTITUDE: " .. tostring(currentAltitude) .. " STUDS"
 	
 	if IS_ACRO_MODE then
 		throttleLabel.Text = "THROTTLE: " .. tostring(math.floor(fpvThrottle * 100)) .. "%"
@@ -568,7 +873,8 @@ end
 
 -- --- LIFE SYSTEMS MANAGEMENT ---
 local function setupCharacterTracking(char)
-	character = char; rootPart = char:WaitForChild("HumanoidRootPart"); head = char:WaitForChild("Head"); humanoid = char:WaitForChild("Humanoid")
+	character = char
+	rootPart = char:WaitForChild("HumanoidRootPart"); head = char:WaitForChild("Head"); humanoid = char:WaitForChild("Humanoid")
 	
 	camera.CameraType = Enum.CameraType.Custom
 	if humanoid then camera.CameraSubject = humanoid end
@@ -586,18 +892,55 @@ setupCharacterTracking(character)
 player.CharacterAdded:Connect(setupCharacterTracking)
 mainButton.MouseButton1Click:Connect(function() toggleDroneMode() end)
 
--- --- KEYBOARD INTERCEPTOR ---
+-- --- INPUT INTERCEPTOR (KEYBOARD & CONTROLLER HOLD EVENT) ---
 UserInputService.InputBegan:Connect(function(input, gameProcessedEvent)
-	if input.KeyCode == Enum.KeyCode.ButtonSelect then toggleDroneMode(); return end
-	
+	if input.UserInputType.Name:find("Gamepad") then
+		if input.KeyCode == Enum.KeyCode.ButtonX then
+			isHoldingGamepadX = true
+			gamepadXHoldStartTime = os.clock()
+			holdBarBg.Visible = true
+		end
+	end
+
 	if IS_DRONE_MODE and not gameProcessedEvent then
 		if input.KeyCode == KEYBIND_NOCLIP_KEYBOARD then
 			IS_NOCLIP_MODE = not IS_NOCLIP_MODE
 		elseif input.KeyCode == KEYBIND_ACRO_KEYBOARD then
 			IS_ACRO_MODE = not IS_ACRO_MODE
 			updateModeUI()
+		elseif input.KeyCode == KEYBIND_ZOOM_KEYBOARD then
+			IS_ZOOMED = not IS_ZOOMED
+		elseif input.KeyCode == KEYBIND_ESP_KEYBOARD then
+			IS_ESP_ACTIVE = not IS_ESP_ACTIVE
 		end
 	end
 end)
 
-RunService.RenderStepped:Connect(updateDrone)
+UserInputService.InputEnded:Connect(function(input, gameProcessedEvent)
+	if input.UserInputType.Name:find("Gamepad") then
+		if input.KeyCode == Enum.KeyCode.ButtonX then
+			isHoldingGamepadX = false
+			holdBarBg.Visible = false
+			holdBarFill.Size = UDim2.new(0, 0, 1, 0)
+		end
+	end
+end)
+
+-- Progress Bar Logic Loop
+RunService.RenderStepped:Connect(function(dt)
+	if isHoldingGamepadX then
+		local timeHeld = os.clock() - gamepadXHoldStartTime
+		local pct = math.clamp(timeHeld / HOLD_TIME_REQUIRED, 0, 1)
+		
+		holdBarFill.Size = UDim2.new(pct, 0, 1, 0)
+		
+		if timeHeld >= HOLD_TIME_REQUIRED then
+			isHoldingGamepadX = false 
+			holdBarBg.Visible = false
+			holdBarFill.Size = UDim2.new(0, 0, 1, 0)
+			toggleDroneMode()
+		end
+	end
+	
+	updateDrone(dt)
+end)
