@@ -46,7 +46,7 @@ local MAX_VERTICAL_SPEED = 90
 
 -- FPV Racing Configuration Constants
 local ACRO_ACCEL = 1600            
-local ACRO_MAX_SPEED = 450         
+local ACRO_MAX_SPEED = 225         
 local ACRO_AERO_DRAG = 0.985       
 local ACRO_STALL_DRAG = 0.950      
 local ACRO_TURN_BLEED = 0.85       
